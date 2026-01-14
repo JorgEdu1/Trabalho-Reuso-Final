@@ -14,6 +14,7 @@ from datetime import datetime
 from flask_login import login_required, current_user
 from werkzeug.utils import secure_filename
 import os
+from app.services.post_service import PostService
 
 dashboard = Blueprint('dashboard', __name__)
 
@@ -205,121 +206,32 @@ def user_preview(id):
 @dashboard.route("/dashboard/submit_new_post", methods=["GET", "POST"])
 @login_required
 def submit_post():
+    # 1. Preparação dos dados do formulário
     themes_list = [(u.id, u.theme) for u in db.session.query(Blog_Theme).all()]
     form = The_Posts(obj=themes_list)
     form.theme.choices = themes_list
 
-    # if request.method == "POST":
+    # 2. Validação e Submissão
     if form.validate_on_submit():
-        author = current_user.id
+        # Delega criação do post para o Serviço
+        post = PostService.create_post_entry(form, current_user.id)
         
-        # get all information from the form with the exeption of the blog post pictures
-        # this will enable the saving of the information even if there is an error with the picture upload: 
-        post = Blog_Posts(theme_id=form.theme.data,
-                            date_to_post=form.date.data, title=form.title.data, intro=form.intro.data,
-                            body=form.body.data, picture_v_source=form.picture_v_source.data, picture_h_source=form.picture_h_source.data,
-                            picture_s_source=form.picture_s_source.data,
-                            picture_alt=form.picture_alt.data, meta_tag=form.meta_tag.data, title_tag=form.title_tag.data,
-                            author_id=author)
-        
-        # add form information to database without the pictures:
-        try:
-            db.session.add(post)
-            db.session.commit()
-        except:
+        if not post:
             flash("Oops, error saving your blog post, check all fields and try again.")
-            db.session.rollback()
+            return render_template("dashboard/posts_submit_new.html", logged_in=current_user.is_authenticated, form=form)
 
-        # checking images: one image at a time
-        the_post_id = post.id
+        # Delega processamento de imagens para o Serviço
+        status = PostService.handle_post_images(post, form, request.files)
 
-        submit_post_blog_img_provided = dict(v = False, h = False, s = False)
-        submit_post_blog_img_status = dict(v=False, h=False, s=False)
-
-        def submit_post_blog_img_handle (img_filename, img_format):
-            accepted_img_format = ["v", "h", "s"]
-            if img_format not in accepted_img_format:
-                raise NameError(
-                    "submit_post_blog_img_handle function was supplied an invalid img_format")
-            new_img_name = check_blog_picture(
-                the_post_id, img_filename, img_format)
-            if new_img_name:
-                new_img_format = "picture_" + img_format
-                the_img = request.files[new_img_format]
-                try:
-                    the_img.save(os.path.join(
-                        current_app.config["BLOG_IMG_FOLDER"], new_img_name))
-                    if img_format == "v":
-                        post.picture_v = new_img_name
-                    elif img_format == "h":
-                        post.picture_h = new_img_name
-                    else:
-                        post.picture_s = new_img_name
-                    db.session.commit()
-                    submit_post_blog_img_status[img_format] = True
-                except:
-                    submit_post_blog_img_status[img_format] = False
-
-        # checking picture vertical:
-        if form.picture_v.data and int(form.picture_v_size.data) < 1500000:
-            img_v_filename = secure_filename(form.picture_v.data.filename)
-            submit_post_blog_img_handle(img_v_filename, "v")
-            submit_post_blog_img_provided["v"] = True
-        else:
-            submit_post_blog_img_provided["v"] = False
-
-        # checking picture horizontal:
-        if form.picture_h.data and int(form.picture_h_size.data) < 1500000:
-            img_h_filename = secure_filename(form.picture_h.data.filename)
-            submit_post_blog_img_handle(img_h_filename, "h")
-            submit_post_blog_img_provided["h"] = True
-        else:
-            submit_post_blog_img_provided["h"] = False
-
-        # checking picture squared:
-        if form.picture_s.data and int(form.picture_s_size.data) < 1500000:
-            img_s_filename = secure_filename(form.picture_s.data.filename)
-            submit_post_blog_img_handle(img_s_filename, "s")
-            submit_post_blog_img_provided["s"] = True
-        else:
-            submit_post_blog_img_provided["s"] = False
-
-        # inform the user of the status of the post
-        submit_post_blog_missing_pic = False
-        submit_post_blog_status_pic = False
-
-        for key in submit_post_blog_img_provided:
-            if submit_post_blog_img_provided[key] == False:
-                submit_post_blog_missing_pic = True
-        
-        for key in submit_post_blog_img_provided:
-            if submit_post_blog_img_status[key] == False:
-                submit_post_blog_status_pic = True
-
-        if submit_post_blog_missing_pic == True and submit_post_blog_status_pic == True:
-            flash("Blog post submitted successfully, but one or more pictures were missing and at least one couldn't be downloaded.")
-        elif submit_post_blog_missing_pic == True:
+        # 3. Feedback para o usuário (Lógica de UI)
+        if status['missing'] and status['error']:
+            flash("Blog post submitted, but some pictures were missing and others failed to upload.")
+        elif status['missing']:
             flash("Blog post submitted successfully, but one or more pictures were missing.")
-        elif submit_post_blog_status_pic == True:
-            flash("Blog post submitted successfully, but one or more pictures couldn't be downloaded.")
+        elif status['error']:
+            flash("Blog post submitted successfully, but one or more pictures couldn't be uploaded.")
         else:
             flash("Blog post submitted successfully!")
-
-        # clear form:
-        form.theme.data = ""
-        form.date.data = datetime.now
-        form.title.data = ""
-        form.intro.data = ""
-        form.body.data = ""
-        form.picture_v.data = ""
-        form.picture_v_source.data = ""
-        form.picture_h.data = ""
-        form.picture_h_source.data = ""
-        form.picture_s.data = ""
-        form.picture_s_source.data = ""
-        form.picture_alt.data = ""
-        form.meta_tag.data = ""
-        form.title_tag.data = ""
 
         return redirect(url_for('account.dashboard'))
 
