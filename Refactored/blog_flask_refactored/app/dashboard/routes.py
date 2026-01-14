@@ -15,6 +15,7 @@ from flask_login import login_required, current_user
 from werkzeug.utils import secure_filename
 import os
 from app.services.post_service import PostService
+from app.services.user_service import UserService
 
 dashboard = Blueprint('dashboard', __name__)
 
@@ -35,7 +36,37 @@ def users_table():
         flash("Access denied: admin access only.")
         return redirect(url_for('website.home'))
 
+# Helper Method (Extraído via Extract Method)
+def _perform_user_update_logic(user_to_update, form):
+    """
+    Função auxiliar que contém apenas a lógica de atualização e bloqueio.
+    Reduz a complexidade da rota principal.
+    """
+    # Atualiza campos básicos
+    user_to_update.name = form.get("username_update")
+    user_to_update.email = form.get("email_update")
+    user_to_update.type = form.get("accttype_update")
+    user_to_update.blocked = form.get("acctblocked_update")
+
+    # Lógica de bloqueio em Cascata (Comentários e Respostas)
+    should_block = (form.get("acctblocked_update") == "TRUE")
+    
+    # Busca todos os comentários/respostas do usuário de uma vez
+    user_comments = Blog_Comments.query.filter(Blog_Comments.user_id == user_to_update.id).all()
+    user_replies = Blog_Replies.query.filter(Blog_Replies.user_id == user_to_update.id).all()
+    
+    # Aplica o estado (Bloqueado ou Desbloqueado)
+    new_status = "TRUE" if should_block else "FALSE"
+    
+    for comment in user_comments:
+        comment.blocked = new_status
+    for reply in user_replies:
+        reply.blocked = new_status
+
+    db.session.commit()
+
 # Managing users: update user
+# REFATORADO - Extract Method aplicado para separar validação de lógica
 @dashboard.route("/dashboard/manage_users/update/<int:id>", methods=["GET", "POST"])
 @login_required
 def user_update(id):
@@ -44,116 +75,53 @@ def user_update(id):
     user_to_update = Blog_User.query.get_or_404(id)
 
     if request.method == "POST":
+        # Validação: Verifica duplicidade de Email
         if Blog_User.query.filter(Blog_User.id != id, Blog_User.email == request.form.get("email_update")).first():
             flash("This email is already registered with us.")
             return render_template("dashboard/users_user_update.html", id=user_to_update.id, logged_in=current_user.is_authenticated, user_to_update=user_to_update, acct_types=acct_types, acct_blocked=acct_blocked)
+        
+        # Validação: Verifica duplicidade de Username
         elif Blog_User.query.filter(Blog_User.id != id, Blog_User.name == request.form.get("username_update")).first():
             flash("This username is already registered with us.")
             return render_template("dashboard/users_user_update.html", id=user_to_update.id, logged_in=current_user.is_authenticated, user_to_update=user_to_update, acct_types=acct_types, acct_blocked=acct_blocked)
+        
         else:
-            # if the user to being updated is of type author, if type is updated, posts have to pass to default author first.
-            if user_to_update.type == "author":
-                if request.form.get("accttype_update") != "author":
-                    change_authorship_of_all_post(user_to_update.id, 2)
+            # Regra de Negócio: Se mudar de autor para outro tipo, transfere posts
+            if user_to_update.type == "author" and request.form.get("accttype_update") != "author":
+                change_authorship_of_all_post(user_to_update.id, 2)
 
-            user_to_update.name = request.form.get("username_update")
-            user_to_update.email = request.form.get("email_update")
-            user_to_update.type = request.form.get("accttype_update")
-            user_to_update.blocked = request.form.get("acctblocked_update")
+            # Executa a atualização (Chamada ao método extraído)
             try:
-                if request.form.get("acctblocked_update") == "TRUE":
-                    user_comments = Blog_Comments.query.filter(
-                        Blog_Comments.user_id == user_to_update.id).all()
-                    user_replies = Blog_Replies.query.filter(
-                        Blog_Replies.user_id == user_to_update.id).all()
-                    if user_comments:
-                        for comment in user_comments:
-                            comment.blocked = "TRUE"
-                    if user_replies:
-                        for reply in user_replies:
-                            reply.blocked = "TRUE"
-                if request.form.get("acctblocked_update") == "FALSE":
-                    user_comments = Blog_Comments.query.filter(
-                        Blog_Comments.user_id == user_to_update.id).all()
-                    user_replies = Blog_Replies.query.filter(
-                        Blog_Replies.user_id == user_to_update.id).all()
-                    if user_comments:
-                        for comment in user_comments:
-                            comment.blocked = "FALSE"
-                    if user_replies:
-                        for reply in user_replies:
-                            reply.blocked = "FALSE"
-                db.session.commit()
+                _perform_user_update_logic(user_to_update, request.form)
                 flash("User updated successfully!")
-                # no time for flash, change way of displaying success
                 return redirect(url_for('dashboard.users_table'))
-            except:
+            except Exception:
                 db.session.rollback()
                 flash("Error, try again.")
                 return render_template("dashboard/users_user_update.html", id=user_to_update.id, logged_in=current_user.is_authenticated, user_to_update=user_to_update, acct_types=acct_types, acct_blocked=acct_blocked)
     else:
         return render_template("dashboard/users_user_update.html", logged_in=current_user.is_authenticated, user_to_update=user_to_update, acct_types=acct_types, acct_blocked=acct_blocked)
 
-
 # Deleting user
+# REFATORADO - Lógica movida para UserService
 @dashboard.route("/dashboard/manage_users/delete/<int:id>", methods=["GET", "POST"])
 @login_required
 def user_delete(id):
     user_to_delete = Blog_User.query.get_or_404(id)
+    
     if request.method == "POST":
-        if id == 1:
-            flash("Authorization error: this user cannot be deleted")
+        success, message = UserService.delete_user_cascade(id)
+        
+        if success:
+            flash(message)
+            return redirect(url_for('dashboard.users_table'))
         else:
-            try:
-                # if user is author, transfer the authorship of the posts to the default author
-                if user_to_delete.type == "author":
-                    change_authorship_of_all_post(user_to_delete.id, 2)
-                # if user has comments/replies, change ownership (to default user of id 3 and delete or mark as blocked ([deleted]).
-                if user_to_delete.comments:
-                    comments = Blog_Comments.query.filter_by(
-                        user_id=user_to_delete.id).all()
-                    for comment in comments:
-                        comment.user_id = 3
-                        delete_comment(comment.id)
-                if user_to_delete.replies:
-                    replies = comments = Blog_Replies.query.filter_by(
-                        user_id=user_to_delete.id).all()
-                    for reply in replies:
-                        reply.user_id = 3
-                        delete_reply(reply.id)
-                # delete bookmarks and likes
-                if user_to_delete.likes:
-                    likes = Blog_Likes.query.filter_by(
-                        user_id=user_to_delete.id).all()
-                    for like in likes:
-                        db.session.delete(like)
-                        update_likes(-1)
-                if user_to_delete.bookmarks:
-                    bookmarks = Blog_Bookmarks.query.filter_by(
-                        user_id=user_to_delete.id).all()
-                    for bookmark in bookmarks:
-                        db.session.delete(bookmark)
-                        update_bookmarks(-1)
-                # delete user's picture
-                if user_to_delete.picture == "" or user_to_delete.picture == "Picture_default.jpg":
-                    profile_picture = None
-                else:
-                    profile_picture = user_to_delete.picture
-
-                if profile_picture != None and os.path.exists(os.path.join(current_app.config["PROFILE_IMG_FOLDER"], profile_picture)):
-                    os.remove(os.path.join(
-                        current_app.config["PROFILE_IMG_FOLDER"], profile_picture))
-
-                # delete user
-                db.session.delete(user_to_delete)
-                db.session.commit()
-                flash("User deleted successfully.")
-                update_stats_users_active(-1)
-                return redirect(url_for('dashboard.users_table'))
-            except:
-                flash("There was a problem deleting this user.")
-                db.session.rollback()
-                return render_template("dashboard/users_user_delete.html", logged_in=current_user.is_authenticated, user_to_delete=user_to_delete)
+            flash(message)
+            if "Authorization" in message:
+                 return render_template("dashboard/users_user_delete.html", logged_in=current_user.is_authenticated, user_to_delete=user_to_delete)
+            
+            return render_template("dashboard/users_user_delete.html", logged_in=current_user.is_authenticated, user_to_delete=user_to_delete)
+            
     else:
         return render_template("dashboard/users_user_delete.html", logged_in=current_user.is_authenticated, user_to_delete=user_to_delete)
 
@@ -306,12 +274,12 @@ def preview_post(id):
     return render_template("dashboard/posts_preview_post.html", logged_in=current_user.is_authenticated, post_to_preview=post_to_preview)
 
 # Editing a post - ADMIN AND AUTHORS
-#make authors as a list
+# [REFATORADO] - Matheus: Utilizando PostService e Reuso de Lógica de Imagem
 @dashboard.route("/dashboard/manage_posts_author/edit_post/<int:id>", endpoint='edit_post_author', methods=["GET", "POST"])
 @dashboard.route("/dashboard/manage_posts/edit_post/<int:id>", methods=["GET", "POST"])
 @login_required
 def edit_post(id):
-
+    
     # getting post information
     post_to_edit = Blog_Posts.query.get_or_404(id)
     themes_list = [(u.id, u.theme) for u in db.session.query(Blog_Theme).all()]
@@ -320,117 +288,25 @@ def edit_post(id):
 
     # changing the post
     if form.validate_on_submit():
-        # get all information from the form with the exeption of the blog post pictures
-        # this will enable the saving of the information even if there is an error with the picture upload:
-        post_to_edit.theme_id = form.theme.data
-        post_to_edit.date_to_post = form.date.data
-        post_to_edit.title = form.title.data
-        post_to_edit.intro = form.intro.data
-        post_to_edit.body = form.body.data
-        post_to_edit.picture_v_source = form.picture_v_source.data
-        post_to_edit.picture_h_source = form.picture_h_source.data
-        post_to_edit.picture_s_source = form.picture_s_source.data
-        post_to_edit.picture_alt = form.picture_alt.data
-        post_to_edit.meta_tag = form.meta_tag.data
-        post_to_edit.title_tag = form.title_tag.data
-
-        # add form information to database without the pictures:
-        try:
-            db.session.commit()
-        except:
+        # atualiza dados de texto via Service
+        success = PostService.update_post_entry(post_to_edit, form)
+        if not success:
             flash("Oops, error saving your changes, check all fields and try again.")
         
-        # checking images: one image at a time
-        the_post_id = post_to_edit.id
+        # processa Imagens (Reutilizando lógica com flag is_update=True)
+        status = PostService.handle_post_images(post_to_edit, form, request.files, is_update=True)
 
-        submit_post_blog_img_provided = dict(v=False, h=False, s=False)
-        submit_post_blog_img_status = dict(v=False, h=False, s=False)
-
-        def submit_post_blog_img_handle(img_filename, img_format):
-            accepted_img_format = ["v", "h", "s"]
-            if img_format not in accepted_img_format:
-                raise NameError(
-                    "submit_post_blog_img_handle function was supplied an invalid img_format")
-            new_img_name = check_blog_picture(
-                the_post_id, img_filename, img_format)
-            if new_img_name:
-                new_img_format = "picture_" + img_format
-                the_img = request.files[new_img_format]
-                try:
-                    if img_format == "v":
-                        delete_blog_img(post_to_edit.picture_v)
-                        post_to_edit.picture_v = new_img_name
-                    elif img_format == "h":
-                        delete_blog_img(post_to_edit.picture_h)
-                        post_to_edit.picture_h = new_img_name
-                    else:
-                        delete_blog_img(post_to_edit.picture_s)
-                        post_to_edit.picture_s = new_img_name
-                    the_img.save(os.path.join(
-                        current_app.config["BLOG_IMG_FOLDER"], new_img_name))
-                    db.session.commit()
-                    submit_post_blog_img_status[img_format] = True
-                except:
-                    submit_post_blog_img_status[img_format] = False
-
-        img_size_not_accepted = False
-
-        # checking picture vertical:
-        if form.picture_v.data and int(form.picture_v_size.data) < 1500000:
-            img_v_filename = secure_filename(form.picture_v.data.filename)
-            submit_post_blog_img_handle(img_v_filename, "v")
-            submit_post_blog_img_provided["v"] = True
-        elif form.picture_v_size.data and int(form.picture_v_size.data) > 1500000:
-            img_size_not_accepted = True
-        elif form.picture_v_size.data and int(form.picture_v_size.data) < 1500000:
-            submit_post_blog_img_provided["v"] = True
+        if status['size_error']:
+            flash("Blog post edit saved, but one or more pictures were too large (>1.5MB).")
+        elif status['error']:
+            flash("Blog post saved, but one or more pictures couldn't be saved. Check format.")
         else:
-            submit_post_blog_img_provided["v"] = False
-
-        # checking picture horizontal:
-        if form.picture_h.data and int(form.picture_h_size.data) < 1500000:
-            img_h_filename = secure_filename(form.picture_h.data.filename)
-            submit_post_blog_img_handle(img_h_filename, "h")
-            submit_post_blog_img_provided["h"] = True
-        elif form.picture_h_size.data and int(form.picture_h_size.data) > 1500000:
-            img_size_not_accepted = True
-        elif form.picture_h_size.data and int(form.picture_h_size.data) < 1500000:
-            submit_post_blog_img_provided["h"] = True
-        else:
-            submit_post_blog_img_provided["h"] = False
-
-        # checking picture squared:
-        if form.picture_s.data and int(form.picture_s_size.data) < 1500000:
-            img_s_filename = secure_filename(form.picture_s.data.filename)
-            submit_post_blog_img_handle(img_s_filename, "s")
-            submit_post_blog_img_provided["s"] = True
-        elif form.picture_s_size.data and int(form.picture_s_size.data) > 1500000:
-            img_size_not_accepted = True
-        elif form.picture_s_size.data and int(form.picture_s_size.data) < 1500000:
-            submit_post_blog_img_provided["s"] = True
-        else:
-            submit_post_blog_img_provided["s"] = False
-
-        # inform the user of the status of the post
-        problem_with_img_download = False
-
-        for key in submit_post_blog_img_provided:
-            if submit_post_blog_img_provided[key] == True:
-                if submit_post_blog_img_status[key] == False:
-                    problem_with_img_download = True
-
-        if img_size_not_accepted == True:
-            flash("Blog post edit saved, but one or more pictures were too large and couldn't be saved.")
-        elif problem_with_img_download == True:
-            flash(
-                "Blog post saved, but one or more pictures couldn't be saved. Check picture format.")
-        else:
-            flash("Blog post editted successfully!")
+            flash("Blog post edited successfully!")
 
         if current_user.type == "admin" or current_user.type == "super_admin":
-            return redirect(url_for("dashboard.posts_table", logged_in=current_user.is_authenticated))
+            return redirect(url_for("dashboard.posts_table"))
         else:
-            return redirect(url_for("dashboard.posts_table_author", logged_in=current_user.is_authenticated))
+            return redirect(url_for("dashboard.posts_table_author"))
         
     # filling out the form with saved post data
     form.theme.data = post_to_edit.theme_id
@@ -445,8 +321,8 @@ def edit_post(id):
     form.picture_alt.data = post_to_edit.picture_alt
     form.meta_tag.data = post_to_edit.meta_tag
     form.title_tag.data = post_to_edit.title_tag
+    
     return render_template('dashboard/posts_edit_post.html', logged_in=current_user.is_authenticated, form=form, post_to_edit=post_to_edit)
-
 # Deleting a post 
 @dashboard.route("/dashboard/manage_posts_author/delete_post/<int:id>", endpoint='delete_post_author', methods=["GET", "POST"])
 @dashboard.route("/dashboard/manage_posts/delete_post/<int:id>", methods=["GET", "POST"])
