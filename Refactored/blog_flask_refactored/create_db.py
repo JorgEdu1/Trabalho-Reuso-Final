@@ -11,8 +11,9 @@ from app.models.contact import Blog_Contact
 # from app.models.text import about_text_author, about_text_user  # dummie strings
 from app.dummie_data import authors, posts, themes, comments
 from app.account.helpers import hash_pw
-from app.models.helpers import pic_src_user, pic_src_post, pic_src_theme, update_stats_comments_total, update_stats_users_total, update_likes, update_bookmarks, delete_comment, delete_reply, update_approved_post_stats, update_stats_users_active
+from app.models.helpers import update_stats_comments_total, update_stats_users_total, update_likes, update_bookmarks, delete_comment, delete_reply, update_approved_post_stats, update_stats_users_active
 from datetime import datetime
+from app.general_helpers.image_helper import ImageHelper
 
 
 # Creating a super_admin, a default author account, and a default user account

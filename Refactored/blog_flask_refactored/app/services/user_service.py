@@ -5,11 +5,13 @@ from werkzeug.utils import secure_filename
 from flask import current_app
 
 from app.account.helpers import hash_pw
-from app.general_helpers.helpers import check_image_filename
+from app.general_helpers.image_helper import ImageHelper
 from app.models.helpers import update_stats_users_total, update_stats_users_active, update_likes, update_bookmarks, change_authorship_of_all_post
 from app.models.user import Blog_User
 
 from app.repositories.user_repository import UserRepository
+
+
 
 class UserService:
     @staticmethod
@@ -70,9 +72,10 @@ class UserService:
     @staticmethod
     def update_profile_picture(user_id, form_picture):
         user = UserRepository.get_by_id(user_id)
+        helper = ImageHelper()
         
         pic_filename = secure_filename(form_picture.filename)
-        if not check_image_filename(pic_filename):
+        if not helper.check_image_filename(pic_filename):
             return "invalid_extension"
 
         pic_filename_unique = str(uuid.uuid1()) + "_" + pic_filename
