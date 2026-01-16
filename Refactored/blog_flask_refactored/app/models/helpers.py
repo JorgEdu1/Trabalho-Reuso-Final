@@ -4,16 +4,6 @@ from app.models.posts import Blog_Posts
 from app.extensions import db
 from sqlalchemy import desc
 
-# Functions that take the picture's name and output the path to the source file
-def pic_src_post(picture_name):
-    return f"../static/Pictures_Posts/{picture_name}"
-
-def pic_src_theme(picture_name):
-    return f"../static/Pictures_Themes/{picture_name}"
-
-def pic_src_user(picture_name):
-    return f"../static/Pictures_Users/{picture_name}"
-
 # Functions that update the statistics (Stats)
 def update_stats_comments_total():
     stats = Blog_Stats.query.get_or_404(1)

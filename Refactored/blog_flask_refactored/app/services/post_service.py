@@ -4,18 +4,20 @@ from werkzeug.utils import secure_filename
 from app.repositories.post_repository import PostRepository
 from app.models.posts import Blog_Posts
 
-from app.dashboard.helpers import check_blog_picture, delete_blog_img
+#from app.dashboard.helpers import check_blog_picture, delete_blog_img
+from app.general_helpers.image_helper import ImageHelper
 from app.models.helpers import update_approved_post_stats
 
 
 class PostService:
     @staticmethod
     def _handle_and_save_image(post_id, file_storage, img_type):
+        helper = ImageHelper()
         if not file_storage:
             return None
 
         filename = secure_filename(file_storage.filename)
-        new_img_name = check_blog_picture(post_id, filename, img_type)
+        new_img_name = helper.check_blog_picture(post_id, filename, img_type)
         
         if new_img_name:
             save_path = os.path.join(current_app.config["BLOG_IMG_FOLDER"], new_img_name)
@@ -77,6 +79,7 @@ class PostService:
 
     @staticmethod
     def update_post(post_id, form):
+        helper = ImageHelper()
         post = PostRepository.get_by_id(post_id)
         
         post.theme_id = form.theme.data
@@ -93,15 +96,15 @@ class PostService:
 
         try:
             if form.picture_v.data:
-                if post.picture_v: delete_blog_img(post.picture_v) # Apaga velha
+                if post.picture_v: helper.delete_blog_img(post.picture_v) # Apaga velha
                 post.picture_v = PostService._handle_and_save_image(post.id, form.picture_v.data, "v")
 
             if form.picture_h.data:
-                if post.picture_h: delete_blog_img(post.picture_h)
+                if post.picture_h: helper.delete_blog_img(post.picture_h)
                 post.picture_h = PostService._handle_and_save_image(post.id, form.picture_h.data, "h")
 
             if form.picture_s.data:
-                if post.picture_s: delete_blog_img(post.picture_s)
+                if post.picture_s: helper.delete_blog_img(post.picture_s)
                 post.picture_s = PostService._handle_and_save_image(post.id, form.picture_s.data, "s")
 
             PostRepository.update()
@@ -112,6 +115,7 @@ class PostService:
 
     @staticmethod
     def delete_post(post_id):
+        helper = ImageHelper()
         post = PostRepository.get_by_id(post_id)
         
         if post.admin_approved == "TRUE":
@@ -122,7 +126,7 @@ class PostService:
         PostRepository.delete_with_cascade(post)
         
         for img in imgs_to_delete:
-            if img: delete_blog_img(img)
+            if img: helper.delete_blog_img(img)
 
     @staticmethod
     def get_themes():
