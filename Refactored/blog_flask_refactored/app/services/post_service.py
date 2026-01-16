@@ -7,6 +7,7 @@ from app.models.posts import Blog_Posts
 from app.dashboard.helpers import check_blog_picture, delete_blog_img
 from app.models.helpers import update_approved_post_stats
 
+
 class PostService:
     @staticmethod
     def _handle_and_save_image(post_id, file_storage, img_type):
@@ -122,3 +123,35 @@ class PostService:
         
         for img in imgs_to_delete:
             if img: delete_blog_img(img)
+
+    @staticmethod
+    def get_themes():
+        return PostRepository.get_themes()
+    
+    @staticmethod
+    def get_post_by_id(post_id):
+        return PostRepository.get_by_id(post_id)
+    
+    @staticmethod
+    def approve_post(post_id):
+        post = PostRepository.get_by_id(post_id)
+        
+        post.admin_approved = "TRUE"
+        
+        PostRepository.update()
+        
+        update_approved_post_stats(1)
+        
+        return "success"
+
+    @staticmethod
+    def disallow_post(post_id):
+        post = PostRepository.get_by_id(post_id)
+        
+        post.admin_approved = "FALSE"
+        
+        PostRepository.update()
+        
+        update_approved_post_stats(-1)
+        
+        return "success"

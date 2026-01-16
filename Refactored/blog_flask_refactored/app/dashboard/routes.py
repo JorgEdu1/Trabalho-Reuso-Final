@@ -1,22 +1,12 @@
-from flask import Blueprint, render_template, request, redirect, flash, url_for, current_app, abort
-from app.extensions import db
+from flask import Blueprint, render_template, request, redirect, flash, url_for, abort
 from app.models.user import Blog_User
 from app.models.posts import Blog_Posts
 from app.dashboard.forms import The_Posts
-# from app.dashboard.helpers import check_blog_picture, delete_blog_img
-from app.models.themes import Blog_Theme
-from app.models.helpers import update_stats_users_active, update_approved_post_stats, change_authorship_of_all_post
-# from app.models.likes import Blog_Likes
-# from app.models.bookmarks import Blog_Bookmarks
-from app.models.comments import Blog_Comments, Blog_Replies
-# from app.models.helpers import update_likes, update_bookmarks, delete_comment, delete_reply
-# from datetime import datetime
+from app.models.helpers import change_authorship_of_all_post
 from flask_login import login_required, current_user
-# from werkzeug.utils import secure_filename
-import os
+# import os
 from app.services.post_service import PostService
 from app.services.user_service import UserService
-from app.repositories.post_repository import PostRepository
 
 dashboard = Blueprint('dashboard', __name__)
 
@@ -37,74 +27,41 @@ def users_table():
         flash("Access denied: admin access only.")
         return redirect(url_for('website.home'))
 
-# Helper Method (Extraído via Extract Method)
-def _perform_user_update_logic(user_to_update, form):
-    """
-    Função auxiliar que contém apenas a lógica de atualização e bloqueio.
-    Reduz a complexidade da rota principal.
-    """
-    # Atualiza campos básicos
-    user_to_update.name = form.get("username_update")
-    user_to_update.email = form.get("email_update")
-    user_to_update.type = form.get("accttype_update")
-    user_to_update.blocked = form.get("acctblocked_update")
-
-    # Lógica de bloqueio em Cascata (Comentários e Respostas)
-    should_block = (form.get("acctblocked_update") == "TRUE")
-    
-    # Busca todos os comentários/respostas do usuário de uma vez
-    user_comments = Blog_Comments.query.filter(Blog_Comments.user_id == user_to_update.id).all()
-    user_replies = Blog_Replies.query.filter(Blog_Replies.user_id == user_to_update.id).all()
-    
-    # Aplica o estado (Bloqueado ou Desbloqueado)
-    new_status = "TRUE" if should_block else "FALSE"
-    
-    for comment in user_comments:
-        comment.blocked = new_status
-    for reply in user_replies:
-        reply.blocked = new_status
-
-    db.session.commit()
-
 # Managing users: update user
-# REFATORADO - Extract Method aplicado para separar validação de lógica
 @dashboard.route("/dashboard/manage_users/update/<int:id>", methods=["GET", "POST"])
 @login_required
 def user_update(id):
     acct_types = ["admin", "author", "user"]
     acct_blocked = ["FALSE", "TRUE"]
-    user_to_update = Blog_User.query.get_or_404(id)
+    
+    user_to_update = UserService.get_by_id(id)
 
     if request.method == "POST":
-        # Validação: Verifica duplicidade de Email
-        if Blog_User.query.filter(Blog_User.id != id, Blog_User.email == request.form.get("email_update")).first():
+        
+        existing_email_user = UserService.get_by_email(request.form.get("email_update"))
+        if existing_email_user and existing_email_user.id != id:
             flash("This email is already registered with us.")
             return render_template("dashboard/users_user_update.html", id=user_to_update.id, logged_in=current_user.is_authenticated, user_to_update=user_to_update, acct_types=acct_types, acct_blocked=acct_blocked)
         
-        # Validação: Verifica duplicidade de Username
-        elif Blog_User.query.filter(Blog_User.id != id, Blog_User.name == request.form.get("username_update")).first():
+        existing_name_user = UserService.get_by_name(request.form.get("username_update"))
+        if existing_name_user and existing_name_user.id != id:
             flash("This username is already registered with us.")
             return render_template("dashboard/users_user_update.html", id=user_to_update.id, logged_in=current_user.is_authenticated, user_to_update=user_to_update, acct_types=acct_types, acct_blocked=acct_blocked)
-        
-        else:
-            # Regra de Negócio: Se mudar de autor para outro tipo, transfere posts
-            if user_to_update.type == "author" and request.form.get("accttype_update") != "author":
-                change_authorship_of_all_post(user_to_update.id, 2)
 
-            # Executa a atualização (Chamada ao método extraído)
-            try:
-                _perform_user_update_logic(user_to_update, request.form)
-                flash("User updated successfully!")
-                return redirect(url_for('dashboard.users_table'))
-            except Exception:
-                db.session.rollback()
-                flash("Error, try again.")
-                return render_template("dashboard/users_user_update.html", id=user_to_update.id, logged_in=current_user.is_authenticated, user_to_update=user_to_update, acct_types=acct_types, acct_blocked=acct_blocked)
+        if user_to_update.type == "author" and request.form.get("accttype_update") != "author":
+            change_authorship_of_all_post(user_to_update.id, 2)
+
+        try:
+            UserService.perform_user_update_logic(user_to_update, request.form)
+            flash("User updated successfully!")
+            return redirect(url_for('dashboard.users_table'))
+        except Exception as e:
+            flash(f"Error updating user: {str(e)}")
+            return render_template("dashboard/users_user_update.html", id=user_to_update.id, logged_in=current_user.is_authenticated, user_to_update=user_to_update, acct_types=acct_types, acct_blocked=acct_blocked)
+    
     else:
         return render_template("dashboard/users_user_update.html", logged_in=current_user.is_authenticated, user_to_update=user_to_update, acct_types=acct_types, acct_blocked=acct_blocked)
-
 # Deleting user
-# REFATORADO - Lógica movida para UserService
 @dashboard.route("/dashboard/manage_users/delete/<int:id>", methods=["GET", "POST"])
 @login_required
 def user_delete(id):
@@ -132,31 +89,25 @@ def user_delete(id):
 @dashboard.route("/dashboard/manage_users/block/<int:id>", methods=["GET", "POST"])
 @login_required
 def user_block(id):
-    user_to_block = Blog_User.query.get_or_404(id)
+    user_to_block = UserService.get_user_by_id(id)
+    if not user_to_block:
+        abort(404)
+
     if request.method == "POST":
-        if id == 1:
+        status = UserService.block_user(id)
+
+        if status == "cannot_block_admin":
             flash("Authorization error: this user cannot be blocked")
-        else:
-            user_to_block.blocked = "TRUE"
-            # all comments and replies shall be blocked
-            user_comments = Blog_Comments.query.filter(
-                Blog_Comments.user_id == user_to_block.id).all()
-            user_replies = Blog_Replies.query.filter(
-                Blog_Replies.user_id == user_to_block.id).all()
-            if user_comments:
-                for comment in user_comments:
-                    comment.blocked = "TRUE"
-            if user_replies:
-                for reply in user_replies:
-                    reply.blocked = "TRUE"
-            try:
-                db.session.commit()
-                flash("User blocked successfully.")
-                return redirect(url_for('dashboard.users_table'))
-            except:
-                db.session.rollback()
-                flash("There was a problem blocking this user.")
-                return render_template("dashboard/users_user_block.html", logged_in=current_user.is_authenticated, user_to_block=user_to_block)
+            return render_template("dashboard/users_user_block.html", logged_in=current_user.is_authenticated, user_to_block=user_to_block)
+        
+        elif status == "success":
+            flash("User blocked successfully.")
+            return redirect(url_for('dashboard.users_table'))
+        
+        else: # status == "error"
+            flash("There was a problem blocking this user.")
+            return render_template("dashboard/users_user_block.html", logged_in=current_user.is_authenticated, user_to_block=user_to_block)
+            
     else:
         return render_template("dashboard/users_user_block.html", logged_in=current_user.is_authenticated, user_to_block=user_to_block)
 
@@ -175,8 +126,7 @@ def user_preview(id):
 @dashboard.route("/dashboard/submit_new_post", methods=["GET", "POST"])
 @login_required
 def submit_post():
-    from app.extensions import db # Apenas para popular o SelectField se necessário, ou crie ThemeRepository
-    themes_list = [(u.id, u.theme) for u in db.session.query(Blog_Theme).all()]
+    themes_list = PostService.get_themes()
     
     form = The_Posts()
     form.theme.choices = themes_list
@@ -206,19 +156,20 @@ def posts_table():
 @dashboard.route("/dashboard/manage_posts/approve_post/<int:id>", methods=["GET", "POST"])
 @login_required
 def approve_post(id):
-    post_to_approve = Blog_Posts.query.get_or_404(id)
+    post_to_approve = PostService.get_post_by_id(id)
+
     if request.method == "POST":
-        post_to_approve.admin_approved = "TRUE"
         try:
-            db.session.commit()
+            PostService.approve_post(id)
+            
             flash("This post has been admin approved.")
-            update_approved_post_stats(1)
             return redirect(url_for('dashboard.posts_table'))
-        except:
+        except Exception:
             flash("There was a problem approving this post.")
             return render_template("dashboard/posts_approve_post.html", logged_in=current_user.is_authenticated, post_to_approve=post_to_approve)
     else:
         return render_template("dashboard/posts_approve_post.html", logged_in=current_user.is_authenticated, post_to_approve=post_to_approve)
+
 
 # Disapprove (disallow) posts: only user accounts of type admin can disapprove a post
 # Disapproving a post will unpublish it from the blog
@@ -226,15 +177,15 @@ def approve_post(id):
 @dashboard.route("/dashboard/manage_posts/disallow_post/<int:id>", methods=["GET", "POST"])
 @login_required
 def disallow_post(id):
-    post_to_disallow = Blog_Posts.query.get_or_404(id)
+    post_to_disallow = PostService.get_post_by_id(id)
+
     if request.method == "POST":
-        post_to_disallow.admin_approved = "FALSE"
         try:
-            db.session.commit()
+            PostService.disallow_post(id)
+            
             flash("This post is no longer admin approved.")
-            update_approved_post_stats(-1)
             return redirect(url_for('dashboard.posts_table'))
-        except:
+        except Exception:
             flash("There was a problem disallowing this post.")
             return render_template("dashboard/posts_disallow_post.html", logged_in=current_user.is_authenticated, post_to_disallow=post_to_disallow)
     else:
@@ -264,18 +215,15 @@ def preview_post(id):
 @dashboard.route("/dashboard/manage_posts/edit_post/<int:id>", methods=["GET", "POST"])
 @login_required
 def edit_post(id):
-    from app.repositories.post_repository import PostRepository
-    from app.models.themes import Blog_Theme
-    from app.extensions import db # Apenas para query de leitura rápida dos temas
     
-    post = PostRepository.get_by_id(id)
+    post = PostService.get_by_id(id)
     
     if current_user.type != "admin" and current_user.type != "super_admin" and post.author_id != current_user.id:
         abort(403)
 
     form = The_Posts()
     
-    themes_list = [(u.id, u.theme) for u in db.session.query(Blog_Theme).all()]
+    themes_list = PostService.get_themes()
     form.theme.choices = themes_list
 
     if form.validate_on_submit():
@@ -303,7 +251,7 @@ def edit_post(id):
 @dashboard.route("/dashboard/manage_posts/delete_post/<int:id>", methods=["GET", "POST"])
 @login_required
 def delete_post(id):
-    post = PostRepository.get_by_id(id)
+    post = PostService.get_by_id(id)
     
     if request.method == "GET":
         return render_template("dashboard/posts_delete_post.html", 

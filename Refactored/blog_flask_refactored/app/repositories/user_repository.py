@@ -3,7 +3,6 @@ from app.models.user import Blog_User
 from app.models.likes import Blog_Likes
 from app.models.bookmarks import Blog_Bookmarks
 from app.models.comments import Blog_Comments, Blog_Replies
-from app.models.posts import Blog_Posts
 from app.models.helpers import delete_comment, delete_reply
 
 class UserRepository:
@@ -79,6 +78,25 @@ class UserRepository:
             # 4. Deleta o User
             db.session.delete(user)
             db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            raise e
+        
+    @staticmethod
+    def update_user_and_content_status(user, content_block_status=None):
+        try:
+            if content_block_status is not None:
+                user_comments = Blog_Comments.query.filter(Blog_Comments.user_id == user.id).all()
+                user_replies = Blog_Replies.query.filter(Blog_Replies.user_id == user.id).all()
+
+                for comment in user_comments:
+                    comment.blocked = content_block_status
+                
+                for reply in user_replies:
+                    reply.blocked = content_block_status
+
+            db.session.commit()
+            return user
         except Exception as e:
             db.session.rollback()
             raise e

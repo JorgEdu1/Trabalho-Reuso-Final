@@ -119,3 +119,51 @@ class UserService:
         update_stats_users_active(-1)
         
         return "success"
+    
+    @staticmethod
+    def perform_user_update_logic(user_to_update, form):
+        user_to_update.name = form.get("username_update")
+        user_to_update.email = form.get("email_update")
+        user_to_update.type = form.get("accttype_update")
+        
+        new_blocked_status = form.get("acctblocked_update")
+        user_to_update.blocked = new_blocked_status
+
+        content_status_to_apply = None
+
+        if new_blocked_status == "TRUE":
+            content_status_to_apply = "TRUE"
+        elif new_blocked_status == "FALSE":
+            content_status_to_apply = "FALSE"
+
+        UserRepository.update_user_and_content_status(user_to_update, content_status_to_apply)
+
+    @staticmethod
+    def get_by_id(user_id):
+        return UserRepository.get_by_id(user_id)
+    
+    @staticmethod
+    def get_by_email(email):
+        return UserRepository.get_by_email(email)
+    
+    @staticmethod
+    def get_by_name(name):
+        return UserRepository.get_by_name(name)
+
+    @staticmethod
+    def block_user(user_id):
+        user = UserRepository.get_by_id(user_id)
+        if not user:
+            return "not_found"
+
+        if user_id == 1:
+            return "cannot_block_admin"
+
+        user.blocked = "TRUE"
+        
+        try:
+            UserRepository.update_user_and_content_status(user, content_block_status="TRUE")
+            return "success"
+        except Exception as e:
+            # Logar erro se necessário
+            return "error"

@@ -4,6 +4,8 @@ from app.models.posts import Blog_Posts
 from app.models.comments import Blog_Comments, Blog_Replies
 from app.models.likes import Blog_Likes
 from app.models.bookmarks import Blog_Bookmarks
+from app.models.themes import Blog_Theme
+
 
 class PostRepository:
     @staticmethod
@@ -22,7 +24,6 @@ class PostRepository:
 
     @staticmethod
     def update():
-        """Apenas confirma as mudanças feitas nos objetos carregados."""
         try:
             db.session.commit()
         except Exception as e:
@@ -31,22 +32,15 @@ class PostRepository:
 
     @staticmethod
     def delete_with_cascade(post):
-        """
-        Deleta o post e limpa manualmente todas as dependências no banco.
-        Isso substitui a lógica espalhada na rota antiga.
-        """
         try:
-            # 1. Deletar Likes
             likes = Blog_Likes.query.filter_by(post_id=post.id).all()
             for like in likes:
                 db.session.delete(like)
 
-            # 2. Deletar Bookmarks
             bookmarks = Blog_Bookmarks.query.filter_by(post_id=post.id).all()
             for bm in bookmarks:
                 db.session.delete(bm)
 
-            # 3. Deletar Comentários e Respostas
             comments = Blog_Comments.query.filter_by(post_id=post.id).all()
             for comment in comments:
                 replies = Blog_Replies.query.filter_by(comment_id=comment.id).all()
@@ -54,9 +48,13 @@ class PostRepository:
                     db.session.delete(reply)
                 db.session.delete(comment)
 
-            # 4. Deletar o Post
             db.session.delete(post)
             db.session.commit()
         except Exception as e:
             db.session.rollback()
             raise e
+        
+    @staticmethod
+    def get_themes():
+        themes_list = [(u.id, u.theme) for u in db.session.query(Blog_Theme).all()]
+        return themes_list
