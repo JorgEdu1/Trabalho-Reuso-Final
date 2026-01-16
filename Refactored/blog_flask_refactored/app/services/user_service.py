@@ -1,82 +1,121 @@
 import os
+import uuid
+from werkzeug.security import check_password_hash
+from werkzeug.utils import secure_filename
 from flask import current_app
-from app.extensions import db
+
+from app.account.helpers import hash_pw
+from app.general_helpers.helpers import check_image_filename
+from app.models.helpers import update_stats_users_total, update_stats_users_active, update_likes, update_bookmarks, change_authorship_of_all_post
 from app.models.user import Blog_User
-from app.models.comments import Blog_Comments, Blog_Replies
-from app.models.likes import Blog_Likes
-from app.models.bookmarks import Blog_Bookmarks
-from app.models.helpers import (
-    change_authorship_of_all_post, 
-    delete_comment, 
-    delete_reply, 
-    update_likes, 
-    update_bookmarks, 
-    update_stats_users_active
-)
+
+from app.repositories.user_repository import UserRepository
 
 class UserService:
     @staticmethod
-    def delete_user_cascade(user_id):
-        """
-        Executa a exclusão completa de um usuário, limpando ou reatribuindo
-        todos os dados relacionados (Posts, Comentários, Likes, Arquivos).
-        """
-        user_to_delete = Blog_User.query.get_or_404(user_id)
+    def signup_user(form):
+        if UserRepository.get_by_email(form.email.data):
+            return None, "email_exists"
         
-        if user_id == 1:
-            return False, "Authorization error: this user cannot be deleted"
+        hashed_pw = hash_pw(form.password.data)
 
-        try:
-            if user_to_delete.type == "author":
-                change_authorship_of_all_post(user_to_delete.id, 2)
+        new_user = Blog_User(
+            name=form.username.data,
+            email=form.email.data,
+            password=hashed_pw,
+            type="user"
+        )
 
-            if user_to_delete.comments:
-                comments = Blog_Comments.query.filter_by(user_id=user_to_delete.id).all()
-                for comment in comments:
-                    comment.user_id = 3
-                    delete_comment(comment.id)
+        UserRepository.add(new_user)
 
-            if user_to_delete.replies:
-                replies = Blog_Replies.query.filter_by(user_id=user_to_delete.id).all()
-                for reply in replies:
-                    reply.user_id = 3
-                    delete_reply(reply.id)
+        update_stats_users_total()
+        update_stats_users_active(1)
 
-            if user_to_delete.likes:
-                likes = Blog_Likes.query.filter_by(user_id=user_to_delete.id).all()
-                for like in likes:
-                    db.session.delete(like)
-                    update_likes(-1)
-            
-            if user_to_delete.bookmarks:
-                bookmarks = Blog_Bookmarks.query.filter_by(user_id=user_to_delete.id).all()
-                for bookmark in bookmarks:
-                    db.session.delete(bookmark)
-                    update_bookmarks(-1)
-
-            UserService._delete_profile_picture(user_to_delete.picture)
-
-            db.session.delete(user_to_delete)
-            db.session.commit()
-            
-            update_stats_users_active(-1)
-            
-            return True, "User deleted successfully."
-
-        except Exception as e:
-            db.session.rollback()
-            return False, "There was a problem deleting this user."
+        return new_user, "success"
 
     @staticmethod
-    def _delete_profile_picture(picture_filename):
-        if not picture_filename or picture_filename == "Picture_default.jpg":
-            return
-
-        folder = current_app.config["PROFILE_IMG_FOLDER"]
-        path = os.path.join(folder, picture_filename)
+    def login_user(email, password):
+        user = UserRepository.get_by_email(email)
         
-        if os.path.exists(path):
-            try:
-                os.remove(path)
-            except Exception:
-                pass
+        if not user:
+            return None, "email_not_found"
+        
+        if not check_password_hash(user.password, password):
+            return None, "wrong_password"
+            
+        if user.blocked == "TRUE":
+            return None, "blocked"
+            
+        return user, "success"
+
+    @staticmethod
+    def update_user_info(user_id, form):
+        user = UserRepository.get_by_id(user_id)
+        
+        existing_email = UserRepository.get_by_email(form.email.data)
+        if existing_email and existing_email.id != user_id:
+            return "email_taken"
+        
+        existing_name = UserRepository.get_by_name(form.username.data)
+        if existing_name and existing_name.id != user_id:
+            return "username_taken"
+
+        user.name = form.username.data
+        user.email = form.email.data
+        user.about = form.about.data
+        
+        UserRepository.update()
+        return "success"
+
+    @staticmethod
+    def update_profile_picture(user_id, form_picture):
+        user = UserRepository.get_by_id(user_id)
+        
+        pic_filename = secure_filename(form_picture.filename)
+        if not check_image_filename(pic_filename):
+            return "invalid_extension"
+
+        pic_filename_unique = str(uuid.uuid1()) + "_" + pic_filename
+        old_picture = user.picture
+
+        try:
+            form_picture.save(os.path.join(
+                current_app.config["PROFILE_IMG_FOLDER"], pic_filename_unique))
+            
+            user.picture = pic_filename_unique
+            UserRepository.update()
+
+            if old_picture and old_picture != "Picture_default.jpg":
+                old_path = os.path.join(current_app.config["PROFILE_IMG_FOLDER"], old_picture)
+                if os.path.exists(old_path):
+                    os.remove(old_path)
+            
+            return "success"
+        except:
+            return "error"
+
+    @staticmethod
+    def delete_account(user_id):
+        user = UserRepository.get_by_id(user_id)
+        
+        if user_id == 1:
+            return "cannot_delete_admin"
+
+        if user.type == "author":
+            change_authorship_of_all_post(user.id, 2)
+
+        if user.picture and user.picture != "Picture_default.jpg":
+            pic_path = os.path.join(current_app.config["PROFILE_IMG_FOLDER"], user.picture)
+            if os.path.exists(pic_path):
+                os.remove(pic_path)
+
+        if user.likes:
+            update_likes(-len(user.likes))
+        if user.bookmarks:
+            update_bookmarks(-len(user.bookmarks))
+
+        UserRepository.delete_account_logic(user)
+        
+        update_stats_users_active(-1)
+        
+        return "success"

@@ -1,21 +1,22 @@
-from flask import Blueprint, render_template, request, redirect, flash, url_for, current_app
+from flask import Blueprint, render_template, request, redirect, flash, url_for, current_app, abort
 from app.extensions import db
 from app.models.user import Blog_User
 from app.models.posts import Blog_Posts
 from app.dashboard.forms import The_Posts
-from app.dashboard.helpers import check_blog_picture, delete_blog_img
+# from app.dashboard.helpers import check_blog_picture, delete_blog_img
 from app.models.themes import Blog_Theme
 from app.models.helpers import update_stats_users_active, update_approved_post_stats, change_authorship_of_all_post
-from app.models.likes import Blog_Likes
-from app.models.bookmarks import Blog_Bookmarks
+# from app.models.likes import Blog_Likes
+# from app.models.bookmarks import Blog_Bookmarks
 from app.models.comments import Blog_Comments, Blog_Replies
-from app.models.helpers import update_likes, update_bookmarks, delete_comment, delete_reply
-from datetime import datetime
+# from app.models.helpers import update_likes, update_bookmarks, delete_comment, delete_reply
+# from datetime import datetime
 from flask_login import login_required, current_user
-from werkzeug.utils import secure_filename
+# from werkzeug.utils import secure_filename
 import os
 from app.services.post_service import PostService
 from app.services.user_service import UserService
+from app.repositories.post_repository import PostRepository
 
 dashboard = Blueprint('dashboard', __name__)
 
@@ -174,34 +175,19 @@ def user_preview(id):
 @dashboard.route("/dashboard/submit_new_post", methods=["GET", "POST"])
 @login_required
 def submit_post():
-    # 1. Preparação dos dados do formulário
+    from app.extensions import db # Apenas para popular o SelectField se necessário, ou crie ThemeRepository
     themes_list = [(u.id, u.theme) for u in db.session.query(Blog_Theme).all()]
-    form = The_Posts(obj=themes_list)
+    
+    form = The_Posts()
     form.theme.choices = themes_list
 
-    # 2. Validação e Submissão
     if form.validate_on_submit():
-        # Delega criação do post para o Serviço
-        post = PostService.create_post_entry(form, current_user.id)
-        
-        if not post:
-            flash("Oops, error saving your blog post, check all fields and try again.")
-            return render_template("dashboard/posts_submit_new.html", logged_in=current_user.is_authenticated, form=form)
-
-        # Delega processamento de imagens para o Serviço
-        status = PostService.handle_post_images(post, form, request.files)
-
-        # 3. Feedback para o usuário (Lógica de UI)
-        if status['missing'] and status['error']:
-            flash("Blog post submitted, but some pictures were missing and others failed to upload.")
-        elif status['missing']:
-            flash("Blog post submitted successfully, but one or more pictures were missing.")
-        elif status['error']:
-            flash("Blog post submitted successfully, but one or more pictures couldn't be uploaded.")
-        else:
-            flash("Blog post submitted successfully!")
-
-        return redirect(url_for('account.dashboard'))
+        try:
+            PostService.create_post(form, current_user.id)
+            flash("Blog post submitted successfully!", "success")
+            return redirect(url_for('account.dashboard'))
+        except Exception as e:
+            flash(f"Error saving post: {str(e)}", "danger")
 
     return render_template("dashboard/posts_submit_new.html", logged_in=current_user.is_authenticated, form=form)
 
@@ -274,111 +260,64 @@ def preview_post(id):
     return render_template("dashboard/posts_preview_post.html", logged_in=current_user.is_authenticated, post_to_preview=post_to_preview)
 
 # Editing a post - ADMIN AND AUTHORS
-# [REFATORADO] - Matheus: Utilizando PostService e Reuso de Lógica de Imagem
 @dashboard.route("/dashboard/manage_posts_author/edit_post/<int:id>", endpoint='edit_post_author', methods=["GET", "POST"])
 @dashboard.route("/dashboard/manage_posts/edit_post/<int:id>", methods=["GET", "POST"])
 @login_required
 def edit_post(id):
+    from app.repositories.post_repository import PostRepository
+    from app.models.themes import Blog_Theme
+    from app.extensions import db # Apenas para query de leitura rápida dos temas
     
-    # getting post information
-    post_to_edit = Blog_Posts.query.get_or_404(id)
+    post = PostRepository.get_by_id(id)
+    
+    if current_user.type != "admin" and current_user.type != "super_admin" and post.author_id != current_user.id:
+        abort(403)
+
+    form = The_Posts()
+    
     themes_list = [(u.id, u.theme) for u in db.session.query(Blog_Theme).all()]
-    form = The_Posts(obj=themes_list)
     form.theme.choices = themes_list
 
-    # changing the post
     if form.validate_on_submit():
-        # atualiza dados de texto via Service
-        success = PostService.update_post_entry(post_to_edit, form)
-        if not success:
-            flash("Oops, error saving your changes, check all fields and try again.")
-        
-        # processa Imagens (Reutilizando lógica com flag is_update=True)
-        status = PostService.handle_post_images(post_to_edit, form, request.files, is_update=True)
+        try:
+            PostService.update_post(id, form)
+            flash("Post editado com sucesso!", "success")
+            
+            if current_user.type in ["admin", "super_admin"]:
+                return redirect(url_for("dashboard.posts_table"))
+            else:
+                return redirect(url_for("dashboard.posts_table_author"))
+        except Exception as e:
+            flash(f"Erro ao atualizar post: {str(e)}", "danger")
 
-        if status['size_error']:
-            flash("Blog post edit saved, but one or more pictures were too large (>1.5MB).")
-        elif status['error']:
-            flash("Blog post saved, but one or more pictures couldn't be saved. Check format.")
-        else:
-            flash("Blog post edited successfully!")
+    elif request.method == 'GET':
+        form.process(obj=post)
 
-        if current_user.type == "admin" or current_user.type == "super_admin":
-            return redirect(url_for("dashboard.posts_table"))
-        else:
-            return redirect(url_for("dashboard.posts_table_author"))
-        
-    # filling out the form with saved post data
-    form.theme.data = post_to_edit.theme_id
-    form.author.data = post_to_edit.author.name
-    form.date.data = post_to_edit.date_to_post
-    form.title.data = post_to_edit.title
-    form.intro.data = post_to_edit.intro
-    form.body.data = post_to_edit.body
-    form.picture_v_source.data = post_to_edit.picture_v_source
-    form.picture_h_source.data = post_to_edit.picture_h_source
-    form.picture_s_source.data = post_to_edit.picture_s_source
-    form.picture_alt.data = post_to_edit.picture_alt
-    form.meta_tag.data = post_to_edit.meta_tag
-    form.title_tag.data = post_to_edit.title_tag
-    
-    return render_template('dashboard/posts_edit_post.html', logged_in=current_user.is_authenticated, form=form, post_to_edit=post_to_edit)
+    return render_template('dashboard/posts_edit_post.html', 
+                           logged_in=current_user.is_authenticated, 
+                           form=form, 
+                           post_to_edit=post)
+
 # Deleting a post 
 @dashboard.route("/dashboard/manage_posts_author/delete_post/<int:id>", endpoint='delete_post_author', methods=["GET", "POST"])
 @dashboard.route("/dashboard/manage_posts/delete_post/<int:id>", methods=["GET", "POST"])
 @login_required
 def delete_post(id):
-    # get post, and its associated likes and comments
-    post_to_delete = Blog_Posts.query.get_or_404(id)
-    post_likes = db.session.query(Blog_Likes).filter(
-        Blog_Likes.post_id == id).all()
-    comments = db.session.query(Blog_Comments).filter(
-        Blog_Comments.post_id == id).all()
+    post = PostRepository.get_by_id(id)
+    
+    if request.method == "GET":
+        return render_template("dashboard/posts_delete_post.html", 
+                               logged_in=current_user.is_authenticated, 
+                               post_to_delete=post,
+                               post_likes=[], comments=[]) 
 
-    if request.method == "POST":
-        try:
-            # delete likes associated
-            for like in post_likes:
-                db.session.delete(like)
+    try:
+        PostService.delete_post(id)
+        flash("Post deleted successfully.", "success")
+    except Exception as e:
+        flash(f"Error deleting post: {str(e)}", "danger")
 
-            # delete comments and replies associated
-            for comment in comments:
-                replies = Blog_Replies.query.filter_by(comment_id=comment.id).all()
-                for reply in replies:
-                    db.session.delete(reply)
-                db.session.delete(comment)
-
-            # delete bookmarks associated
-            bookmarks = Blog_Bookmarks.query.filter_by(post_id=id).all()
-            for bookmark in bookmarks:
-                db.session.delete(bookmark)
-            
-            # delete the post and commit
-            if post_to_delete.admin_approved == "TRUE":
-                post_was_approved = True
-            db.session.delete(post_to_delete)
-            db.session.commit()
-
-            # delete pictures associated
-            delete_blog_img(post_to_delete.picture_v)
-            delete_blog_img(post_to_delete.picture_h)
-            delete_blog_img(post_to_delete.picture_s)
-
-            # update stats
-            if post_was_approved:
-                update_approved_post_stats(-1)
-
-            flash("Post deleted successfully.")
-            if current_user.type == "author":
-                return redirect(url_for('dashboard.posts_table_author'))
-            else:
-                return redirect(url_for('dashboard.posts_table'))
-        except:
-            db.session.rollback()
-            flash("There was a problem deleting this post and associated data.")
-            if current_user.type == "author":
-                return redirect(url_for('dashboard.posts_table_author'))
-            else:
-                return redirect(url_for('dashboard.posts_table'))
+    if current_user.type == "author":
+        return redirect(url_for('dashboard.posts_table_author'))
     else:
-        return render_template("dashboard/posts_delete_post.html", logged_in=current_user.is_authenticated, post_to_delete=post_to_delete, post_likes=post_likes, comments=comments)
+        return redirect(url_for('dashboard.posts_table'))
